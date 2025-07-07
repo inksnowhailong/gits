@@ -130,7 +130,7 @@ export async function useMapGeometry(mapGeoJson: Object, MapMaterial: Material) 
   const { shapes, propertiesShapeMap } = geoJsonToShapes(mapGeoJson)
   const geometryGroup = new Group()
   console.time('GeometryWorkertask')
-  splitObjectByKeys(shapes, 5).forEach((shapes) =>
+  splitObjectByKeys(shapes, 4).forEach((shapes) =>
     GeometryWorkertask(shapes).then((module) => {
       // 循环每个任务的结果
       for (const adcode in module) {
@@ -148,31 +148,10 @@ export async function useMapGeometry(mapGeoJson: Object, MapMaterial: Material) 
           geometryGroup.add(borderLine)
         })
       }
-      // num++
-      // if (num === 5) {
-      //   console.timeEnd('GeometryWorkertask')
-      // }
       console.timeEnd('GeometryWorkertask')
     })
   )
 
-  //形状生成
-  // for (const module of results) {
-  //   // 循环每个任务的结果
-  //   for (const adcode in module) {
-  //     const { geometry, borderLine: borderLineGeometry } = module[adcode]
-  //     // 板块
-  //     const mesh = new Mesh(geometry, MapMaterial)
-  //     mesh.userData.properties = propertiesShapeMap[adcode]
-  //     mesh.castShadow = true
-  //     mesh.receiveShadow = true
-  //     geometryGroup.add(mesh)
-  //     // 边界线
-  //     const borderLine = new Line(borderLineGeometry, borderLineMaterial)
-  //     borderLine.position.set(0, 0, -6.8)
-  //     geometryGroup.add(borderLine)
-  //   }
-  // }
 
   // for (const adcode in shapes) {
   //   const geometrys = shapes[adcode].reduce(
@@ -359,8 +338,20 @@ async function GeometryWorkertask(shapes: Record<string, Shape[]>): Promise<
   const worker = new Worker(new URL('@/utils/workers/worker.ts', import.meta.url), {
     type: 'module'
   })
+  // 将 shape 转换为 buffer 数据
+  const shapeBufferData: Record<string, any> = {}
+  const transferList: ArrayBuffer[] = []
+  for (const adcode in shapes) {
+    const shape = shapes[adcode]
+    const shapeBuffer = shape.map((s) => {
+      const { buffer, meta } = shapeToArrayBuffer(s)
+      transferList.push(buffer)
+      return { buffer, meta }
+    })
+    shapeBufferData[adcode] = shapeBuffer
+  }
+  worker.postMessage({ shapes: shapeBufferData }, transferList)
 
-  worker.postMessage({ shapes: JSON.stringify(shapes) })
   return new Promise((resolve) => {
     worker.onmessage = (e: MessageEvent<{ result: Record<string, any> }>) => {
       const { result } = e.data
@@ -398,7 +389,41 @@ async function GeometryWorkertask(shapes: Record<string, Shape[]>): Promise<
     }
   })
 }
+/**
+ * @description: 数据转换，提高传输效率
+ * @param {Shape} shape
+ * @return {*}
+ */
+function shapeToArrayBuffer(shape: Shape){
+  const outer = shape.getPoints()
+  const holes = shape.holes.map(h => h.getPoints())
 
+  const outerLength = outer.length
+  const holeCounts = holes.map(h => h.length)
+  const totalPoints = outerLength + holeCounts.reduce((a, b) => a + b, 0)
+
+  const buffer = new ArrayBuffer(totalPoints * 2 * 4) // 每个点2个float，每个float占4字节
+  const view = new Float32Array(buffer)
+
+  let offset = 0
+  for (const p of outer) {
+    view[offset++] = p.x
+    view[offset++] = p.y
+  }
+  for (const hole of holes) {
+    for (const p of hole) {
+      view[offset++] = p.x
+      view[offset++] = p.y
+    }
+  }
+  return {
+    buffer,
+    meta: {
+      outerLength,
+      holeCounts
+    }
+  }
+}
 /**
  * @description: 给模型添加天气模型组件（仅添加柱子，icon和天气后续实现）
  * @param {Mesh} geometry three.js的Mesh模型
